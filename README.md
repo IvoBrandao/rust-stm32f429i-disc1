@@ -1,138 +1,237 @@
-# `cortex-m-quickstart`
+# STM32F429ZI — Bare-Metal Rust
 
-> A template for building applications for ARM Cortex-M microcontrollers
+Bare-metal Rust project for the **STM32F429I-DISC1** discovery board (STM32F429ZIT6 chip).
+The firmware blinks the two on-board LEDs (PG13 green, PG14 red) using a TIM2 interrupt at 1 Hz.
 
-This project is developed and maintained by the [Cortex-M team][team].
+---
 
-## Dependencies
+## Hardware
 
-To build embedded programs using this template you'll need:
+| Property        | Value                                    |
+|-----------------|------------------------------------------|
+| MCU             | STM32F429ZIT6                            |
+| Core            | ARM Cortex-M4F (with FPU)               |
+| Flash           | 2048 KB at `0x0800_0000`                |
+| RAM             | 192 KB at `0x2000_0000`                 |
+| CCMRAM          | 64 KB at `0x1000_0000`                  |
+| HSE crystal     | 8 MHz                                    |
+| System clock    | 180 MHz                                  |
+| Programmer      | ST-Link v2.1 (built into the board)     |
+| Green LED       | PG13                                     |
+| Red LED         | PG14                                     |
 
-- Rust 1.31, 1.30-beta, nightly-2018-09-13 or a newer toolchain. e.g. `rustup
-  default beta`
+---
 
-- The `cargo generate` subcommand. [Installation
-  instructions](https://github.com/ashleygwilliams/cargo-generate#installation).
+## Prerequisites
 
-- `rust-std` components (pre-compiled `core` crate) for the ARM Cortex-M
-  targets. Run:
+All steps assume **macOS** with [Homebrew](https://brew.sh) installed.
 
-``` console
-$ rustup target add thumbv6m-none-eabi thumbv7m-none-eabi thumbv7em-none-eabi thumbv7em-none-eabihf
+### 1 — Install Rust
+
+```sh
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
-## Using this template
+Follow the on-screen prompts. After installation, reload your shell:
 
-**NOTE**: This is the very short version that only covers building programs. For
-the long version, which additionally covers flashing, running and debugging
-programs, check [the embedded Rust book][book].
-
-[book]: https://rust-embedded.github.io/book
-
-0. Before we begin you need to identify some characteristics of the target
-  device as these will be used to configure the project:
-
-- The ARM core. e.g. Cortex-M3.
-
-- Does the ARM core include an FPU? Cortex-M4**F** and Cortex-M7**F** cores do.
-
-- How much Flash memory and RAM does the target device has? e.g. 256 KiB of
-  Flash and 32 KiB of RAM.
-
-- Where are Flash memory and RAM mapped in the address space? e.g. RAM is
-  commonly located at address `0x2000_0000`.
-
-You can find this information in the data sheet or the reference manual of your
-device.
-
-In this example we'll be using the STM32F3DISCOVERY. This board contains an
-STM32F303VCT6 microcontroller. This microcontroller has:
-
-- A Cortex-M4F core that includes a single precision FPU
-
-- 256 KiB of Flash located at address 0x0800_0000.
-
-- 40 KiB of RAM located at address 0x2000_0000. (There's another RAM region but
-  for simplicity we'll ignore it).
-
-1. Instantiate the template.
-
-``` console
-$ cargo generate --git https://github.com/rust-embedded/cortex-m-quickstart
- Project Name: app
- Creating project called `app`...
- Done! New project created /tmp/app
-
-$ cd app
+```sh
+source "$HOME/.cargo/env"
 ```
 
-2. Set a default compilation target. There are four options as mentioned at the
-   bottom of `.cargo/config`. For the STM32F303VCT6, which has a Cortex-M4F
-   core, we'll pick the `thumbv7em-none-eabihf` target.
+### 2 — Add the Cortex-M4F compilation target
 
-``` console
-$ tail -n9 .cargo/config.toml
+The STM32F429ZI has a Cortex-M4F core (with FPU), so we need the `hf` (hard-float) variant:
+
+```sh
+rustup target add thumbv7em-none-eabihf
 ```
 
-``` toml
+### 3 — Install OpenOCD
+
+OpenOCD is the on-chip debugger that speaks to the ST-Link probe on the board:
+
+```sh
+brew install openocd
+```
+
+Verify: `openocd --version` should print `Open On-Chip Debugger 0.12.x` or newer.
+
+### 4 — Install GDB
+
+The Homebrew `gdb` package supports ARM targets on macOS:
+
+```sh
+brew install gdb
+```
+
+Verify: `gdb --version` should print `GNU gdb`.
+
+> **Note:** `gdb-multiarch` does not exist on macOS. The `.cargo/config.toml` in this
+> project already points to `gdb`.
+
+### 5 — Install `cargo-binutils` (optional but useful)
+
+Provides `cargo size`, `cargo objdump`, and `cargo nm` for inspecting the binary:
+
+```sh
+cargo install cargo-binutils
+rustup component add llvm-tools
+```
+
+---
+
+## Project structure
+
+```
+.
+├── .cargo/
+│   └── config.toml       # Build target + GDB runner
+├── src/
+│   └── main.rs           # Application entry point
+├── memory.x              # Linker script — Flash/RAM regions for STM32F429ZI
+├── build.rs              # Passes memory.x to the linker
+├── openocd.cfg           # OpenOCD board config (ST-Link + STM32F4x target)
+├── openocd.gdb           # GDB init script — connects, loads firmware, sets breakpoints
+├── Makefile              # Convenience targets: build / flash / debug
+└── Cargo.toml            # Crate dependencies
+```
+
+### Key files explained
+
+**`memory.x`** — tells the linker where Flash and RAM live on this chip:
+
+```
+FLASH  : ORIGIN = 0x08000000, LENGTH = 2048K
+RAM    : ORIGIN = 0x20000000, LENGTH = 192K
+CCMRAM : ORIGIN = 0x10000000, LENGTH = 64K
+```
+
+**`.cargo/config.toml`** — sets the default build target and the GDB runner used by `cargo run`:
+
+```toml
+[target.'cfg(all(target_arch = "arm", target_os = "none"))']
+runner = "gdb -q -x openocd.gdb"
+
 [build]
-# Pick ONE of these compilation targets
-# target = "thumbv6m-none-eabi"    # Cortex-M0 and Cortex-M0+
-# target = "thumbv7m-none-eabi"    # Cortex-M3
-# target = "thumbv7em-none-eabi"   # Cortex-M4 and Cortex-M7 (no FPU)
-target = "thumbv7em-none-eabihf" # Cortex-M4F and Cortex-M7F (with FPU)
-# target = "thumbv8m.base-none-eabi"   # Cortex-M23
-# target = "thumbv8m.main-none-eabi"   # Cortex-M33 (no FPU)
-# target = "thumbv8m.main-none-eabihf" # Cortex-M33 (with FPU)
+target = "thumbv7em-none-eabihf"
 ```
 
-3. Enter the memory region information into the `memory.x` file.
+**`openocd.cfg`** — two lines that select the ST-Link interface and the STM32F4 target:
 
-``` console
-$ cat memory.x
-/* Linker script for the STM32F303VCT6 */
-MEMORY
-{
-  /* NOTE 1 K = 1 KiBi = 1024 bytes */
-  FLASH : ORIGIN = 0x08000000, LENGTH = 256K
-  RAM : ORIGIN = 0x20000000, LENGTH = 40K
-}
+```tcl
+source [find interface/stlink.cfg]
+source [find target/stm32f4x.cfg]
 ```
 
-4. Build the template application or one of the examples.
+**`openocd.gdb`** — run automatically by GDB on startup: connects to OpenOCD on port 3333,
+loads the firmware onto Flash, sets breakpoints at `main`, `HardFault`, and `DefaultHandler`,
+then steps one instruction so the breakpoint at `main` is reachable.
 
-``` console
-$ cargo build
+---
+
+## Building
+
+```sh
+cargo build
 ```
+
+The compiled ELF lands at `target/thumbv7em-none-eabihf/debug/stm32f429i-disc1`.
+
+For an optimised release build:
+
+```sh
+cargo build --release
+```
+
+---
+
+## Flashing
+
+Connect the board via USB. The ST-Link port is the micro-USB connector closest to the
+reset button. Then run:
+
+```sh
+make flash
+```
+
+This calls OpenOCD to program the ELF file, verify it, and reset the board. The LEDs
+should start alternating immediately.
+
+---
+
+## Debugging
+
+The `debug` Make target does everything in one shot:
+
+```sh
+make debug
+```
+
+What it does, step by step:
+
+1. `cargo clean` — removes all previous build artefacts for a clean state.
+2. `cargo build` — compiles the firmware.
+3. Starts `openocd` in the background, connecting to the board via ST-Link.
+4. Launches `gdb`, which runs `openocd.gdb` automatically:
+   - Connects to OpenOCD on `localhost:3333`.
+   - Flashes the firmware (`load`).
+   - Sets breakpoints at `main`, `HardFault`, and `DefaultHandler`.
+   - Halts at the first instruction.
+5. GDB stops at `main` — you are now in an interactive debug session.
+6. When you quit GDB (type `quit` or press `Ctrl-D`), OpenOCD is killed automatically.
+
+### Useful GDB commands during a session
+
+| Command            | Effect                                         |
+|--------------------|------------------------------------------------|
+| `c` or `continue`  | Resume execution                               |
+| `n` or `next`      | Step over the current line                     |
+| `s` or `step`      | Step into a function call                      |
+| `p <expr>`         | Print a variable or expression                 |
+| `info registers`   | Show all CPU registers                         |
+| `bt`               | Print the call stack (backtrace)               |
+| `break <fn>`       | Set a breakpoint at function `<fn>`            |
+| `monitor reset halt` | Reset and halt the MCU via OpenOCD           |
+| `quit`             | Exit GDB (also kills OpenOCD)                  |
+
+---
+
+## Makefile targets
+
+| Target       | Description                                              |
+|--------------|----------------------------------------------------------|
+| `make`       | Build the project (alias for `make build`)              |
+| `make build` | Compile the firmware                                     |
+| `make clean` | Remove build artefacts (`cargo clean`)                  |
+| `make flash` | Build and flash the board, then reset it                |
+| `make debug` | Clean → build → flash → open GDB with breakpoint at `main` |
+
+---
+
+## Firmware overview
+
+`src/main.rs` implements a 1 Hz LED blinker using a TIM2 interrupt:
+
+1. Configures the RCC to run the system at 180 MHz from the 8 MHz HSE crystal.
+2. Configures PG13 and PG14 as push-pull outputs.
+3. Sets up TIM2 to fire an interrupt every second.
+4. In the `TIM2` interrupt handler, toggles the two LEDs by switching between two states.
+5. The main loop calls `wfi` (Wait For Interrupt) — the CPU sleeps between interrupts.
+
+---
 
 ## VS Code
 
-This template includes launch configurations for debugging CortexM programs with Visual Studio Code located in the `.vscode/` directory.  
-See [.vscode/README.md](./.vscode/README.md) for more information.  
-If you're not using VS Code, you can safely delete the directory from the generated project.
+See [.vscode/README.md](./.vscode/README.md) for IDE-based debugging with the
+Cortex-Debug extension.
 
-# License
+---
 
-This template is licensed under either of
+## License
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or
-  http://www.apache.org/licenses/LICENSE-2.0)
+Licensed under either of:
 
-- MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT license ([LICENSE-MIT](LICENSE-MIT))
 
 at your option.
-
-## Contribution
-
-Unless you explicitly state otherwise, any contribution intentionally submitted
-for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
-dual licensed as above, without any additional terms or conditions.
-
-## Code of Conduct
-
-Contribution to this crate is organized under the terms of the [Rust Code of
-Conduct][CoC], the maintainer of this crate, the [Cortex-M team][team], promises
-to intervene to uphold that code of conduct.
-
-[CoC]: https://www.rust-lang.org/policies/code-of-conduct
-[team]: https://github.com/rust-embedded/wg#the-cortex-m-team

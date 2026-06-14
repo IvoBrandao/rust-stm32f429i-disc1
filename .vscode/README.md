@@ -1,112 +1,111 @@
-# VS Code Configuration
+# VS Code Debug Configuration — STM32F429ZI
 
-Example configurations for debugging programs in-editor with VS Code.
-This directory contains configurations for two platforms:
+This directory contains the VS Code debug configuration for the STM32F429I-DISC1 board.
+Debugging goes through OpenOCD and the on-board ST-Link v2.1 probe.
 
- - `LM3S6965EVB` on QEMU
- - `STM32F303x` via OpenOCD
+---
 
-## Required Extensions
+## Required extensions
 
-If you have the `code` command in your path, you can run the following commands to install the necessary extensions.
+Install both extensions before attempting to debug:
 
 ```sh
 code --install-extension rust-lang.rust-analyzer
 code --install-extension marus25.cortex-debug
 ```
 
-Otherwise, you can use the Extensions view to search for and install them, or go directly to their marketplace pages and click the "Install" button.
+Or search for them in the Extensions panel:
 
-- [Rust Language Server (rust-analyzer)](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
-- [Cortex-Debug](https://marketplace.visualstudio.com/items?itemName=marus25.cortex-debug)
+- **rust-analyzer** (`rust-lang.rust-analyzer`) — Rust language support
+- **Cortex-Debug** (`marus25.cortex-debug`) — ARM Cortex-M debug adapter
 
-## Use
+---
 
-The quickstart comes with two debug configurations.
-Both are configured to build the project, using the default settings from `.cargo/config`, prior to starting a debug session.
+## Required tools
 
-1. QEMU: Starts a debug session using an emulation of the `LM3S6965EVB` mcu.
-   - This works on a fresh `cargo generate` without modification of any of the settings described above.
-   - Semihosting output will be written to the Output view `Adapter Output`.
-   - `ITM` logging does not work with QEMU emulation.
+Cortex-Debug needs `gdb` and the ARM binutils (`arm-none-eabi-nm`, `arm-none-eabi-objdump`)
+for full symbol classification. Install them with Homebrew:
 
-2. OpenOCD: Starts a debug session for a `STM32F3DISCOVERY` board (or any `STM32F303x` running at 8MHz).
-   - Follow the instructions above for configuring the build with `.cargo/config` and the `memory.x` linker script.
-   - `ITM` output will be written to the Output view `SWO: ITM [port: 0, type: console]` output.
+```sh
+# OpenOCD — on-chip debugger
+brew install openocd
 
-### Git
+# Homebrew GDB (configured as gdbPath in launch.json)
+brew install gdb
 
-Files in the `.vscode/` directory are `.gitignore`d by default because many files that may end up in the `.vscode/` directory should not be committed and shared.
-If you would like to save this debug configuration to your repository and share it with your team, you'll need to explicitly `git add` the files to your repository.
+# ARM binutils for nm/objdump symbol classification
+brew tap ArmMbed/homebrew-formulae
+brew install arm-none-eabi-gcc
+```
+
+> **Why not `arm-none-eabi-gdb`?** It is not available as a standalone Homebrew package.
+> `launch.json` sets `"gdbPath": "gdb"` to use the Homebrew `gdb` instead, which supports
+> ARM targets on macOS.
+
+---
+
+## SVD file (peripheral register viewer)
+
+The SVD file lets Cortex-Debug show live peripheral register values in the
+**Cortex Peripherals** panel during a debug session.
+
+1. Download the STM32F4 SVD pack from ST:
+   `https://www.st.com/resource/en/svd/stm32f4_svd.zip`
+2. Extract it and copy `STM32F429.svd` into `.vscode/`:
+
+   ```text
+   .vscode/STM32F429.svd
+   ```
+
+   `launch.json` already points to this path via `"svdFile"`.
+
+The SVD file is optional — debugging works without it, you just won't see peripheral registers.
+
+---
+
+## How to start a debug session
+
+1. Connect the board via the ST-Link USB port (the micro-USB closest to the reset button).
+2. Open the **Run and Debug** panel (`Cmd+Shift+D`).
+3. Select **Debug (OpenOCD)** from the dropdown.
+4. Press **F5** or click the green play button.
+
+VS Code will:
+
+1. Run `cargo build` via the `Cargo Build (debug)` pre-launch task.
+2. Start OpenOCD and connect to the board over ST-Link.
+3. Flash the firmware.
+4. Halt execution at `main`.
+
+---
+
+## Configuration notes
+
+| Setting          | Value                   | Reason                                           |
+|------------------|-------------------------|--------------------------------------------------|
+| `gdbPath`        | `gdb`                   | Homebrew gdb; `arm-none-eabi-gdb` not on macOS  |
+| `configFiles[0]` | `interface/stlink.cfg`  | Replaces deprecated `stlink-v2-1.cfg`           |
+| `configFiles[1]` | `target/stm32f4x.cfg`  | STM32F4 family target                            |
+| `cpuFrequency`   | `180000000`             | Sysclk = 180 MHz (from 8 MHz HSE)               |
+| `swoFrequency`   | `2000000`               | SWO pin baud rate for ITM output                |
+
+---
+
+## ITM output
+
+When the SWO pin is wired (it is on the STM32F429I-DISC1 via the ST-Link), ITM port 0
+output appears in the VS Code **Output** panel under `SWO: ITM [port: 0, type: console]`.
+
+---
+
+## Committing these files
+
+VS Code files are gitignored by default. To share this configuration:
 
 ```sh
 git add -f .vscode/launch.json
 git add -f .vscode/tasks.json
-git add -f .vscode/*.svd
+git add -f .vscode/extensions.json
 ```
 
-## Customizing for other targets
-
-For full documentation, see the [Cortex-Debug][cortex-debug] repository.
-
-### Device
-
-Some configurations use this to automatically find the SVD file.
-Replace this with the part number for your device.
-
-```json
-"device": "STM32F303VCT6",
-```
-
-### OpenOCD Config Files
-
-The `configFiles` property specifies a list of files to pass to OpenOCD.
-
-```json
-"configFiles": [
-    "interface/stlink-v2-1.cfg",
-    "target/stm32f3x.cfg"
-],
-```
-
-See the [OpenOCD config docs][openocd-config] for more information and the [OpenOCD repository for available configuration files][openocd-repo].
-
-### SVD
-
-The SVD file is a standard way of describing all registers and peripherals of an ARM Cortex-M mCU.
-Cortex-Debug needs this file to display the current register values for the peripherals on the device.
-
-You can probably find the SVD for your device on the vendor's website.
-
-
-For example, the STM32F3DISCOVERY board uses an mcu from the `STM32F303x` line of processors.
-All the SVD files for the STM32F3 series are available on [ST's Website][stm32f3].
-Download the [stm32f3 SVD pack][stm32f3-svd], and copy the `STM32F303.svd` file into `.vscode/`.
-This line of the config tells the Cortex-Debug plug in where to find the file.
-
-```json
-"svdFile": "${workspaceRoot}/.vscode/STM32F303.svd",
-```
-
-For other processors, simply copy the correct `*.svd` file into the project and update the config accordingly.
-
-### CPU Frequency
-
-If your device is running at a frequency other than 8MHz, you'll need to modify this line of `launch.json` for the `ITM` output to work correctly.
-
-```json
-"cpuFrequency": 8000000,
-```
-
-### Other GDB Servers
-
-For information on setting up GDB servers other than OpenOCD, see the [Cortex-Debug repository][cortex-debug].
-
-[cortex-debug]: https://github.com/Marus/cortex-debug
-[stm32f3]: https://www.st.com/content/st_com/en/products/microcontrollers-microprocessors/stm32-32-bit-arm-cortex-mcus/stm32-mainstream-mcus/stm32f3-series.html#resource
-[stm32f3-svd]: https://www.st.com/resource/en/svd/stm32f3_svd.zip
-[openocd-config]: http://openocd.org/doc/html/Config-File-Guidelines.html
-[openocd-repo]: https://sourceforge.net/p/openocd/code/ci/master/tree/tcl/
-
-
-https://www.st.com/content/ccc/resource/technical/ecad_models_and_symbols/svd/group0/6e/d6/88/45/73/0e/42/81/stm32f4-svd/files/stm32f4-svd.zip/jcr:content/translations/en.stm32f4-svd.zip
+Do **not** commit `.vscode/STM32F429.svd` — it is large and redistributable from ST directly.
