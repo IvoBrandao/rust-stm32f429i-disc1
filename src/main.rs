@@ -1,102 +1,46 @@
 #![no_std]
 #![no_main]
 
-use core::cell::{Cell, RefCell};
-use core::ops::DerefMut;
-use cortex_m::interrupt::{free, Mutex};
-use cortex_m_rt::entry;
-use hal::{
-    gpio::{
-        gpiog::{PG13, PG14},
-        Output, PushPull,
-    },
-    pac::{interrupt, Interrupt, Peripherals, TIM2},
-    prelude::*,
-    timer::{CountDownTimer, Event, Timer},
-};
-use panic_halt as _;
-use stm32f4xx_hal as hal;
+// startup crate provides the Reset handler, vector table, and panic handler.
+use startup as _;
 
-static BLINKY: Mutex<Cell<BlinkState>> = Mutex::new(Cell::new(BlinkState::OnOff));
-static TIMER: Mutex<RefCell<Option<CountDownTimer<TIM2>>>> = Mutex::new(RefCell::new(None));
-static LED_GREEN: Mutex<RefCell<Option<PG13<Output<PushPull>>>>> = Mutex::new(RefCell::new(None));
-static LED_RED: Mutex<RefCell<Option<PG14<Output<PushPull>>>>> = Mutex::new(RefCell::new(None));
+// -- Register addresses (STM32F429 Reference Manual) --------------------------
 
-#[derive(Clone, Copy)]
-enum BlinkState {
-    OnOff,
-    OffOn,
-}
+const RCC_AHB1ENR: *mut u32 = 0x4002_3830 as *mut u32; // AHB1 peripheral clock enable
+const GPIOG_MODER: *mut u32 = 0x4002_1800 as *mut u32; // port mode register
+const GPIOG_BSRR:  *mut u32 = 0x4002_1818 as *mut u32; // bit set/reset register
 
-#[entry]
-fn main() -> ! {
-    let device_periphs: Peripherals = Peripherals::take().unwrap();
+// -----------------------------------------------------------------------------
 
-    device_periphs.RCC.apb2enr.write(|w| w.syscfgen().enabled());
+/// Application entry point called by the startup Reset handler.
+#[no_mangle]
+pub extern "C" fn main() -> ! {
+    unsafe {
+        // 1. Enable GPIOG peripheral clock (AHB1ENR bit 6)
+        RCC_AHB1ENR.write_volatile(RCC_AHB1ENR.read_volatile() | (1 << 6));
 
-    let clocks = device_periphs
-        .RCC
-        .constrain()
-        .cfgr
-        .use_hse(8.mhz()) // discovery board has 8 MHz crystal for HSE
-        .hclk(180.mhz())
-        .sysclk(180.mhz())
-        .pclk1(45.mhz())
-        .pclk2(90.mhz())
-        .freeze();
+        // 2. Set PG13 and PG14 to general-purpose output mode (MODER = 0b01)
+        //    PG13 → MODER[27:26], PG14 → MODER[29:28]
+        let moder = GPIOG_MODER.read_volatile() & !(0xF << 26);
+        GPIOG_MODER.write_volatile(moder | (0b01 << 26) | (0b01 << 28));
 
-    let gpiog_periph = device_periphs.GPIOG.split();
+        // 3. Alternate green (PG13) and red (PG14) at ~1 Hz
+        //    The chip runs at 16 MHz HSI after reset; 4_000_000 NOPs ≈ 1 s.
+        loop {
+            // PG13 on, PG14 off  (BSRR upper 16 bits reset, lower 16 bits set)
+            GPIOG_BSRR.write_volatile((1 << 13) | (1 << (14 + 16)));
+            delay(4_000_000);
 
-    let mut _led_green = gpiog_periph.pg13.into_push_pull_output();
-    _led_green.set_high();
-
-    let mut _led_red = gpiog_periph.pg14.into_push_pull_output();
-    _led_red.set_low();
-
-    // Create a 1s periodic interrupt from TIM2
-    let mut _timer = Timer::new(device_periphs.TIM2, &clocks).start_count_down(1.hz());
-
-    _timer.listen(Event::TimeOut);
-    _timer.clear_interrupt(Event::TimeOut);
-
-    free(|cs| {
-        TIMER.borrow(cs).replace(Some(_timer));
-        LED_GREEN.borrow(cs).replace(Some(_led_green));
-        LED_RED.borrow(cs).replace(Some(_led_red));
-    });
-
-    // Enable interrupt
-    cortex_m::peripheral::NVIC::unpend(Interrupt::TIM2);
-    unsafe { cortex_m::peripheral::NVIC::unmask(Interrupt::TIM2) };
-
-    loop {
-        // The main thread can now go to sleep.
-        // WFI (wait for interrupt) puts the core in sleep until an interrupt occurs.
-        cortex_m::asm::wfi();
+            // PG14 on, PG13 off
+            GPIOG_BSRR.write_volatile((1 << 14) | (1 << (13 + 16)));
+            delay(4_000_000);
+        }
     }
 }
 
-#[interrupt]
-fn TIM2() {
-    free(|cs| {
-        if let (Some(ref mut _timer), Some(ref mut _led_green), Some(ref mut _led_red)) = (
-            TIMER.borrow(cs).borrow_mut().deref_mut(),
-            LED_GREEN.borrow(cs).borrow_mut().deref_mut(),
-            LED_RED.borrow(cs).borrow_mut().deref_mut(),
-        ) {
-            _timer.clear_interrupt(Event::TimeOut);
-            match BLINKY.borrow(cs).get() {
-                BlinkState::OnOff => {
-                    BLINKY.borrow(cs).replace(BlinkState::OffOn);
-                    _led_green.set_low();
-                    _led_red.set_high();
-                }
-                BlinkState::OffOn => {
-                    BLINKY.borrow(cs).replace(BlinkState::OnOff);
-                    _led_green.set_high();
-                    _led_red.set_low();
-                }
-            }
-        }
-    });
+#[inline(never)]
+fn delay(cycles: u32) {
+    for _ in 0..cycles {
+        unsafe { core::arch::asm!("nop") };
+    }
 }
